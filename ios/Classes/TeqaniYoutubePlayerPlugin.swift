@@ -102,7 +102,7 @@ class TeqaniYoutubePlayerView: NSObject, FlutterPlatformView, WKNavigationDelega
     
     webView = WKWebView(frame: frame, configuration: configuration)
     webView.scrollView.isScrollEnabled = false
-    webView.navigationDelegate = self
+    
     
     // Setup method channel for player control
     methodChannel = FlutterMethodChannel(
@@ -111,6 +111,7 @@ class TeqaniYoutubePlayerView: NSObject, FlutterPlatformView, WKNavigationDelega
     )
     
     super.init()
+    webView.navigationDelegate = self
     
     // Load the HTML with embedded YouTube player
     loadYouTubePlayerHTML()
@@ -259,7 +260,7 @@ class TeqaniYoutubePlayerView: NSObject, FlutterPlatformView, WKNavigationDelega
     }
     
     // Configure player with options
-    var options = [
+    var options: [String: Any] = [
       "videoId": videoId,
       "controls": showControls ? 1 : 0,
     ]
