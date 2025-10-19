@@ -12,7 +12,6 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 /// Controller for managing a TeqaniYoutubePlayer instance.
 class TeqaniYoutubePlayerController extends ChangeNotifier {
-  
   /// Constructor for TeqaniYoutubePlayerController
   TeqaniYoutubePlayerController({
     required this.initialConfig,
@@ -26,73 +25,75 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
     // Initialize WebViewController immediately
     webViewController = WebViewController();
   }
-  
+
   /// The player configuration
   final PlayerConfig initialConfig;
-  
+
   /// WebViewController for interacting with the WebView
   late final WebViewController webViewController;
-  
+
   /// Whether the player is ready for playback
   bool _isReady = false;
-  
+
   /// Current state of the player
   PlayerState _playerState = PlayerState.unknown;
-  
+
   /// Current position in the video (seconds)
   // ignore: prefer_final_fields
   double _currentPosition = 0.0;
-  
+
   /// Duration of the video (seconds)
   // ignore: prefer_final_fields
   double _videoDuration = 0.0;
-  
+
   /// Current playback rate
   final double _playbackRate = 1.0;
-  
+
   /// Whether the player is in fullscreen mode
   bool _isFullscreen = false;
-  
+
   /// Whether the player is initialized
   bool _isInitialized = false;
-  
+
   /// Last error that occurred
   PlayerError? _lastError;
 
   /// Callback when the player is ready
   VoidCallback? onReady;
-  
+
   /// Callback when player state changes
   Function(PlayerState)? onStateChanged;
-  
+
   /// Callback when an error occurs
   Function(PlayerError)? onError;
-  
+
   /// Callback when playback starts
   VoidCallback? onPlaying;
-  
+
   /// Callback when playback pauses
   VoidCallback? onPaused;
-  
+
   /// Callback when playback ends
   VoidCallback? onEnded;
-  
+
   /// Whether the controller is disposed
   bool _isDisposed = false;
-  
+
   /// Current video quality setting
   String _currentQuality = 'default';
-  
+
   /// Current filter settings
   double _currentSharpness = 100;
   double _currentBrightness = 100;
   double _currentContrast = 100;
   double _currentSaturation = 100;
-  
+
   /// Initialize the player controller
   bool initializing = false;
-  final MethodChannel _methodChannel = const MethodChannel('com.teqani.teqani_youtube_player');
-  
+  final MethodChannel _methodChannel = const MethodChannel(
+    'com.teqani.teqani_youtube_player',
+  );
+
   /// Current video ID
   String get videoId => initialConfig.videoId;
 
@@ -180,7 +181,41 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       // Platform-level vibration disabling caused exceptions - removed
 
       await webViewController.setJavaScriptMode(JavaScriptMode.unrestricted);
-      
+
+      // CRITICAL: Inject CSS immediately to hide YouTube button before page loads
+      await webViewController.runJavaScript('''
+        (function() {
+          const style = document.createElement('style');
+          style.id = 'teqani-instant-hide';
+          style.textContent = `
+            /* Hide YouTube button instantly before iframe loads */
+            .ytp-youtube-button,
+            .ytp-button[aria-label*='YouTube'],
+            .ytp-chrome-top-buttons,
+            a.ytp-youtube-button,
+            .ytp-watermark,
+            .branding-img,
+            .branding-img-container {
+              display: none !important;
+              visibility: hidden !important;
+              opacity: 0 !important;
+              pointer-events: none !important;
+              width: 0 !important;
+              height: 0 !important;
+              position: absolute !important;
+              left: -9999px !important;
+            }
+          `;
+          if (document.head) {
+            document.head.appendChild(style);
+          } else {
+            document.addEventListener('DOMContentLoaded', function() {
+              if (document.head) document.head.appendChild(style);
+            });
+          }
+        })();
+      ''');
+
       // Disable haptic feedback, context menu and long press effects
       await webViewController.runJavaScript('''
         // More aggressive approach to prevent vibration on touch
@@ -269,14 +304,15 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
         // Additional fixes for iOS and Safari
         document.documentElement.style.webkitTouchCallout = 'none';
       ''');
-      
+
       // Set a more generic user agent to avoid potential issues
       await webViewController.setUserAgent(
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       );
 
       // Hardware acceleration check - default to true if not specified
-      final bool enableHardware = initialConfig.enableHardwareAcceleration ?? true;
+      final bool enableHardware =
+          initialConfig.enableHardwareAcceleration ?? true;
       if (enableHardware) {
         // Enable hardware acceleration on Android
         if (defaultTargetPlatform == TargetPlatform.android) {
@@ -294,6 +330,42 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
         NavigationDelegate(
           onPageStarted: (String url) {
             _debugLog('Page started loading: $url');
+            // CRITICAL: Inject CSS hiding IMMEDIATELY when page starts loading
+            webViewController.runJavaScript('''
+              (function() {
+                const hideYTButton = () => {
+                  const style = document.createElement('style');
+                  style.id = 'instant-hide-yt-button';
+                  style.textContent = `
+                    .ytp-youtube-button,
+                    .ytp-button[aria-label*='YouTube'],
+                    .ytp-chrome-top-buttons,
+                    a.ytp-youtube-button,
+                    .ytp-watermark {
+                      display: none !important;
+                      visibility: hidden !important;
+                      opacity: 0 !important;
+                      pointer-events: none !important;
+                      width: 0 !important;
+                      height: 0 !important;
+                      position: absolute !important;
+                      left: -9999px !important;
+                    }
+                  `;
+                  if (document.head) {
+                    document.head.appendChild(style);
+                  }
+                };
+                
+                // Run immediately
+                hideYTButton();
+                
+                // Also run when DOM is ready
+                if (document.readyState === 'loading') {
+                  document.addEventListener('DOMContentLoaded', hideYTButton);
+                }
+              })();
+            ''');
           },
           onPageFinished: (String url) {
             _debugLog('Page finished loading: $url');
@@ -301,31 +373,29 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
           },
           onWebResourceError: (WebResourceError error) {
             _debugLog('Web resource error: ${error.description}');
-            
+
             // Check for network error
             if (error.errorCode == -2) {
               _lastError = PlayerError(
                 code: error.errorCode,
                 message: 'Network error: ${error.description}',
               );
-              
+
               // Call the error callback directly
               onError?.call(_lastError!);
-              
-            notifyListeners();
+
+              notifyListeners();
             }
           },
         ),
       );
 
-      // Load the video URL with improved error handling
-      // Use optional chaining for properties that might not exist
-      
+      // Load the video URL directly (HTML wrapper causes error 15)
       final videoUrl = _buildYoutubeEmbedUrl();
       _debugLog('Loading video URL: $videoUrl');
-      
+
       await webViewController.loadRequest(Uri.parse(videoUrl));
-      
+
       // Check if fullscreen is allowed
       final allowFullscreen = initialConfig.allowFullscreen;
       if (!allowFullscreen) {
@@ -334,7 +404,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
           await disableFullscreen();
         });
       }
-      
+
       // Initialize basic values
       _isReady = true;
       initializing = false;
@@ -347,35 +417,36 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       initializing = false;
       rethrow;
     }
+    onReady?.call();
   }
-  
+
   /// Injects all JavaScript scripts and initializes player functionalities
   void _injectPlayerScripts() async {
     // Batch JavaScript operations to reduce thread load
     SchedulerBinding.instance.addPostFrameCallback((_) async {
       try {
         await _loadYouTubeApi();
-        
+
         // Hide YouTube logo and branding with CSS
         await _hideYouTubeBranding();
-        
+
         // Apply custom style options if provided
         if (initialConfig.styleOptions != null) {
           await applyStyleOptions(initialConfig.styleOptions!);
         }
-        
+
         await _setupPlayerEventListeners();
-        
+
         // Initialize other needed JavaScript components
         await _initializePlayerJavaScript();
-        
+
         notifyListeners();
       } catch (e) {
         _debugLog('Error setting up player scripts: $e');
       }
     });
   }
-  
+
   /// Hide YouTube branding elements
   Future<void> _hideYouTubeBranding() async {
     await webViewController.runJavaScript('''
@@ -552,11 +623,68 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
           // Run the context menu disabler
           disableYouTubeContextMenu();
           
-          // Run again after short delay to catch lazy-loaded elements
+          // AGGRESSIVE: Create instant mutation observer to remove YouTube button the moment it appears
+          const aggressiveObserver = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+              mutation.addedNodes.forEach((node) => {
+                if (node.nodeType === 1) { // Element node
+                  const ytButtonSelectors = [
+                    '.ytp-youtube-button',
+                    '.ytp-button[aria-label*="YouTube"]',
+                    'a.ytp-youtube-button',
+                    '.ytp-chrome-top-buttons',
+                    '.ytp-watermark'
+                  ];
+                  
+                  ytButtonSelectors.forEach(selector => {
+                    // Check if the node itself matches
+                    if (node.matches && node.matches(selector)) {
+                      node.style.cssText = 'display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; width: 0 !important; height: 0 !important;';
+                      node.remove();
+                    }
+                    // Check children of the added node
+                    if (node.querySelectorAll) {
+                      const children = node.querySelectorAll(selector);
+                      children.forEach(child => {
+                        child.style.cssText = 'display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; width: 0 !important; height: 0 !important;';
+                        child.remove();
+                      });
+                    }
+                  });
+                }
+              });
+            });
+          });
+          
+          // Start observing the entire document
+          aggressiveObserver.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: false
+          });
+          
+          // SUPER AGGRESSIVE: Run at very fast intervals
+          setTimeout(removeElements, 10);
+          setTimeout(removeElements, 50);
+          setTimeout(removeElements, 100);
+          setTimeout(removeElements, 200);
+          setTimeout(removeElements, 500);
           setTimeout(removeElements, 1000);
+          setTimeout(removeElements, 2000);
           setTimeout(removeElements, 3000);
           setTimeout(disableYouTubeContextMenu, 1000);
           setTimeout(disableYouTubeContextMenu, 3000);
+          
+          // Continuous checking for first 5 seconds
+          let checkCount = 0;
+          const maxChecks = 50; // 50 checks * 100ms = 5 seconds
+          const fastInterval = setInterval(() => {
+            removeElements();
+            checkCount++;
+            if (checkCount >= maxChecks) {
+              clearInterval(fastInterval);
+            }
+          }, 100); // Check every 100ms
           
           // Set up an interval to periodically check for and remove branding elements
           setInterval(removeElements, 5000);
@@ -612,14 +740,14 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       })();
     ''');
   }
-  
+
   /// Core JavaScript setup for the player
   Future<void> _initializePlayerJavaScript() async {
     // Get default values with fallbacks
     final muted = initialConfig.muted;
     final volume = initialConfig.volume ?? 1.0;
     final playbackRate = initialConfig.playbackRate;
-    
+
     // Batch all initial JavaScript setup into one call
     final String setupScript = '''
       // Create player interface if not exists
@@ -690,11 +818,11 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       
       true;
     ''';
-    
+
     // Execute the batch setup script
     await webViewController.runJavaScript(setupScript);
   }
-  
+
   /// Loads YouTube API if not already loaded
   Future<void> _loadYouTubeApi() async {
     // Use YouTube's postMessage API instead of direct script injection
@@ -776,15 +904,16 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       })();
     ''');
   }
-  
+
   /// Release resources when player is disposed
   @override
   void dispose() {
     _debugLog('Disposing YouTube player controller');
     _disposeListeners();
-    
+
     // Clean up JavaScript resources
-    webViewController.runJavaScript('''
+    webViewController
+        .runJavaScript('''
       if (window.TeqaniPlayer && window.TeqaniPlayer.player) {
         // Stop player and clean up resources
         try {
@@ -796,16 +925,17 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
           console.error('Error cleaning up player:', e);
         }
       }
-    ''').catchError((e) {
-      _debugLog('Error during JavaScript cleanup: $e');
-    });
-    
+    ''')
+        .catchError((e) {
+          _debugLog('Error during JavaScript cleanup: $e');
+        });
+
     _isDisposed = true;
     super.dispose();
   }
-  
+
   /// Player control methods
-  
+
   /// Play the video
   Future<void> play() async {
     // Use both postMessage API and direct video element approach for maximum compatibility
@@ -884,13 +1014,13 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
         }
       })();
     ''');
-    
+
     // Update player state locally for better responsiveness
     _playerState = PlayerState.playing;
     onStateChanged?.call(_playerState);
     notifyListeners();
   }
-  
+
   /// Pause the video
   Future<void> pause() async {
     await webViewController.runJavaScript('''
@@ -902,32 +1032,36 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       })();
     ''');
   }
-  
+
   /// Seek to a specific position in seconds
   Future<void> seekTo(double seconds) async {
     await _runJavaScript('window.TeqaniController.seekTo($seconds)');
   }
-  
+
   /// Set volume (0.0 to 1.0)
   Future<void> setVolume(double volume) async {
-    await _runJavaScript('window.TeqaniController.setVolume(${volume.clamp(0.0, 1.0)})');
+    await _runJavaScript(
+      'window.TeqaniController.setVolume(${volume.clamp(0.0, 1.0)})',
+    );
   }
-  
+
   /// Mute the video
   Future<void> mute() async {
     await _runJavaScript('window.TeqaniController.setMute(true)');
   }
-  
+
   /// Unmute the video
   Future<void> unmute() async {
     await _runJavaScript('window.TeqaniController.setMute(false)');
   }
-  
+
   /// Set playback rate (0.25 to 2.0)
   Future<void> setPlaybackRate(double rate) async {
-    await _runJavaScript('window.TeqaniController.setPlaybackRate(${rate.clamp(0.25, 2.0)})');
+    await _runJavaScript(
+      'window.TeqaniController.setPlaybackRate(${rate.clamp(0.25, 2.0)})',
+    );
   }
-  
+
   /// Fast forward video by specified number of seconds
   Future<void> fastForward([int seconds = 10]) async {
     final newPosition = _currentPosition + seconds;
@@ -939,7 +1073,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
     final newPosition = _currentPosition - seconds;
     await seekTo(newPosition < 0 ? 0 : newPosition);
   }
-  
+
   /// Enter fullscreen mode
   Future<void> enterFullscreen() async {
     _isFullscreen = true;
@@ -954,47 +1088,47 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
 
   /// Get whether the player is in fullscreen mode
   bool get isFullscreen => _isFullscreen;
-  
+
   // Getters for private members
-  
+
   /// Whether the player is ready for playback
   bool get isReady => _isReady;
-  
+
   /// Current state of the player
   PlayerState get playerState => _playerState;
-  
+
   /// Current position in the video (seconds)
   double get currentPosition => _currentPosition;
-  
+
   /// Duration of the video (seconds)
   double get videoDuration => _videoDuration;
-  
+
   /// Current playback rate
   double get playbackRate => _playbackRate;
-  
+
   /// Check if video is playing
   bool get isPlaying => _playerState == PlayerState.playing;
-  
+
   /// Check if video is paused
   bool get isPaused => _playerState == PlayerState.paused;
-  
+
   /// Check if video has ended
   bool get isEnded => _playerState == PlayerState.ended;
-  
+
   /// Run JavaScript code in the WebView
   Future<void> _runJavaScript(String js) async {
     await webViewController.runJavaScript(js);
   }
-  
+
   /// Public method to run JavaScript code in the WebView
   Future<void> runJavaScript(String js) async {
     await _runJavaScript(js);
   }
-  
+
   /// Generate the YouTube embed URL with proper parameters
   String _buildYoutubeEmbedUrl() {
     final showControls = initialConfig.showControls;
-    
+
     return 'https://www.youtube.com/embed/${initialConfig.videoId}'
         '?enablejsapi=1'
         '&autoplay=1' // Always auto-play to prevent showing YouTube's initial play button
@@ -1016,7 +1150,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
         '&origin=${Uri.encodeComponent("https://www.youtube.com")}'
         '&widgetid=1';
   }
-  
+
   /// Hide all control elements completely
   Future<void> hideAllControls() async {
     await webViewController.runJavaScript('''
@@ -1061,10 +1195,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       })();
     ''');
   }
-  
-  
-  
-  
+
   /// Get the last error that occurred
   PlayerError? get lastError => _lastError;
 
@@ -1217,7 +1348,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
         }
       })();
     ''');
-    
+
     // Also handle fullscreen functionality based on options
     if (!options.showFullscreenButton) {
       // If fullscreen button is hidden, also disable double-click fullscreen
@@ -1227,9 +1358,9 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       await enableFullscreen();
     }
   }
-  
+
   /// Set the video quality (resolution)
-  /// 
+  ///
   /// Available quality options:
   /// - 'small': 240p
   /// - 'medium': 360p
@@ -1239,15 +1370,26 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
   /// - 'highres': 1440p/2160p
   /// - 'default': Let YouTube decide based on user's connection
   Future<void> setVideoQuality(String quality) async {
-    final validQualities = ['default', 'tiny', 'small', 'medium', 'large', 'hd720', 'hd1080', 'highres'];
-    
+    final validQualities = [
+      'default',
+      'tiny',
+      'small',
+      'medium',
+      'large',
+      'hd720',
+      'hd1080',
+      'highres',
+    ];
+
     if (!validQualities.contains(quality)) {
-      throw ArgumentError('Invalid quality value. Must be one of: ${validQualities.join(', ')}');
+      throw ArgumentError(
+        'Invalid quality value. Must be one of: ${validQualities.join(', ')}',
+      );
     }
-    
+
     // Save the current quality setting
     _currentQuality = quality;
-    
+
     // First hide YouTube's quality menu elements to prevent them from appearing
     await webViewController.runJavaScript('''
       (function() {
@@ -1298,7 +1440,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
         }
       })();
     ''');
-    
+
     // Now try the direct API approach
     await webViewController.runJavaScript('''
       (function() {
@@ -1333,7 +1475,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
         }
       })();
     ''');
-    
+
     // Only use UI interaction as a last resort, with steps to close the menu
     await webViewController.runJavaScript('''
       (function() {
@@ -1442,10 +1584,10 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
         }
       })();
     ''');
-    
+
     // Wait a bit before removing the menu hiding style
     await Future.delayed(const Duration(milliseconds: 800));
-    
+
     // Remove the style that hides YouTube's quality menu
     await webViewController.runJavaScript('''
       (function() {
@@ -1478,10 +1620,9 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       })();
     ''');
   }
-  
-  
+
   /// Apply visual filters to enhance video appearance
-  /// 
+  ///
   /// Parameters:
   /// - sharpness: 0-300 (100 is normal, higher values increase sharpness)
   /// - brightness: 0-200 (100 is normal)
@@ -1498,13 +1639,14 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
     _currentBrightness = (brightness ?? _currentBrightness).clamp(0, 200);
     _currentContrast = (contrast ?? _currentContrast).clamp(0, 200);
     _currentSaturation = (saturation ?? _currentSaturation).clamp(0, 200);
-    
+
     // Convert to filter values
-    final sharpnessValue = _currentSharpness > 100 ? (_currentSharpness / 100) : 1.0;
+    final sharpnessValue =
+        _currentSharpness > 100 ? (_currentSharpness / 100) : 1.0;
     final brightnessValue = _currentBrightness / 100;
     final contrastValue = _currentContrast / 100;
     final saturationValue = _currentSaturation / 100;
-    
+
     await webViewController.runJavaScript('''
       (function() {
         try {
@@ -1581,7 +1723,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       })();
     ''');
   }
-  
+
   /// Get the current filter settings
   Map<String, double> get currentFilterSettings => {
     'sharpness': _currentSharpness,
@@ -1589,10 +1731,10 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
     'contrast': _currentContrast,
     'saturation': _currentSaturation,
   };
-  
+
   /// Get the current quality setting
   String get currentQuality => _currentQuality;
-  
+
   /// Get available quality levels from the YouTube player
   Future<List<String>> getAvailableQualityLevels() async {
     try {
@@ -1612,7 +1754,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
           }
         })();
       ''');
-      
+
       if (result is List) {
         return result.map((item) => item.toString()).toList();
       } else if (result is String) {
@@ -1625,7 +1767,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
           return [result.toString()];
         }
       }
-      
+
       return ['default', 'small', 'medium', 'large', 'hd720', 'hd1080'];
     } catch (e) {
       _debugLog('Error getting available quality levels: $e');
@@ -1633,7 +1775,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       return ['default', 'small', 'medium', 'large', 'hd720', 'hd1080'];
     }
   }
-  
+
   /// Disable fullscreen functionality for the YouTube player
   Future<void> disableFullscreen() async {
     await webViewController.runJavaScript('''
@@ -1695,7 +1837,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       })();
     ''');
   }
-  
+
   /// Enable fullscreen functionality for the YouTube player
   Future<void> enableFullscreen() async {
     await webViewController.runJavaScript('''
@@ -1725,14 +1867,14 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       })();
     ''');
   }
-  
+
   /// Reset video filters to default
   Future<void> resetVideoFilters() async {
     _currentSharpness = 100;
     _currentBrightness = 100;
     _currentContrast = 100;
     _currentSaturation = 100;
-    
+
     await applyVideoFilters(
       sharpness: 100,
       brightness: 100,
@@ -1740,7 +1882,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       saturation: 100,
     );
   }
-  
+
   /// Apply custom CSS to the YouTube player
   Future<void> applyCustomCSS(String css) async {
     await webViewController.runJavaScript('''
@@ -1782,7 +1924,7 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       })();
     ''');
   }
-  
+
   /// Set visibility of a specific YouTube UI element
   Future<void> setUIElementVisibility(String elementName, bool visible) async {
     // Map element names to CSS selectors
@@ -1796,16 +1938,17 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       'title': '.ytp-chrome-top, .ytp-title',
       'topControls': '.ytp-chrome-top',
       'bottomControls': '.ytp-chrome-bottom',
-      'youtubeButton': '.ytp-youtube-button, .ytp-button[aria-label*="YouTube"], .ytp-watermark',
+      'youtubeButton':
+          '.ytp-youtube-button, .ytp-button[aria-label*="YouTube"], .ytp-watermark',
     };
-    
+
     final selector = elementSelectors[elementName];
     if (selector == null) {
       throw ArgumentError('Unknown element name: $elementName');
     }
-    
+
     final displayValue = visible ? 'block' : 'none';
-    
+
     await webViewController.runJavaScript('''
       (function() {
         try {
@@ -1953,14 +2096,14 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
         }
       })();
     ''');
-    
+
     // Set up a periodic JavaScript execution to ensure the settings button stays in sync
     Timer.periodic(const Duration(seconds: 5), (timer) {
       if (_isDisposed) {
         timer.cancel();
         return;
       }
-      
+
       webViewController.runJavaScript('''
         try {
           // Force a check of YouTube controls
