@@ -489,7 +489,11 @@ class _TeqaniYoutubePlayerState extends State<TeqaniYoutubePlayer>
     final settingsConfig =
         widget.settingsButtonConfig ?? const SettingsButtonConfig();
 
-    return AspectRatio(
+    return PlayerState==PlayerState.unknown? SizedBox(
+            width: double.infinity,
+            height: 200.toH(),
+            child:Text("error player")
+          ) :AspectRatio(
       aspectRatio:
           _isLandscape
               ? mediaQuery.size.width / mediaQuery.size.height
