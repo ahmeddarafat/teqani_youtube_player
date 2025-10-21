@@ -491,7 +491,7 @@ class _TeqaniYoutubePlayerState extends State<TeqaniYoutubePlayer>
 
     return PlayerState==PlayerState.unknown? SizedBox(
             width: double.infinity,
-            height: 200.toH(),
+            height: 200,
             child:Text("error player")
           ) :AspectRatio(
       aspectRatio:
