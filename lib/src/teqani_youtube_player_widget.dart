@@ -489,7 +489,7 @@ class _TeqaniYoutubePlayerState extends State<TeqaniYoutubePlayer>
     final settingsConfig =
         widget.settingsButtonConfig ?? const SettingsButtonConfig();
 
-    return PlayerState==PlayerState.unknown? SizedBox(
+    return widget.controller.playerState==PlayerState.unknown? SizedBox(
             width: double.infinity,
             height: 200,
             child:Text("error player")
