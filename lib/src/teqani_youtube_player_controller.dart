@@ -151,14 +151,41 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
       
       // Add a global message listener for iframe communication
       window.addEventListener('message', function(event) {
+        // Only accept messages from YouTube
+        if (event.origin && event.origin.indexOf('youtube.com') === -1) return;
+        
         try {
-          const data = JSON.parse(event.data);
+          let data = event.data;
+          
+          // Try to parse if it's a string
+          if (typeof data === 'string') {
+            try {
+              data = JSON.parse(data);
+            } catch(e) {
+              // Not JSON, ignore
+              return;
+            }
+          }
+          
+          // Handle quality change events
           if (data && data.event === 'onPlaybackQualityChange') {
             window.TeqaniFlutterCallback('onQualityChange', { quality: data.data });
             console.log('YouTube iframe quality changed to: ' + data.data);
           }
+          
+          // CRITICAL: Handle error events from iframe
+          if (data && data.event === 'onError') {
+            console.log('YouTube iframe error detected: ' + data.info);
+            window.TeqaniFlutterCallback('onError', { errorCode: data.info });
+          }
+          
+          // Also check for numeric error codes directly
+          if (data && typeof data.info === 'number' && (data.info === 2 || data.info === 5 || data.info === 100 || data.info === 101 || data.info === 150 || data.info === 153)) {
+            console.log('YouTube iframe error code detected: ' + data.info);
+            window.TeqaniFlutterCallback('onError', { errorCode: data.info });
+          }
         } catch (e) {
-          // Not our message or not in the expected format
+          console.error('Error processing YouTube message:', e);
         }
       });
     ''');
@@ -182,13 +209,120 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
 
       await webViewController.setJavaScriptMode(JavaScriptMode.unrestricted);
 
+      // Add JavaScript channel to receive YouTube player events and errors
+      await webViewController.addJavaScriptChannel(
+        'TeqaniYTPlayer',
+        onMessageReceived: (JavaScriptMessage message) {
+          try {
+            final data = jsonDecode(message.message);
+            final event = data['event'];
+
+            _debugLog(
+              '📨 JavaScript event received: $event, data: ${data['data']}',
+            );
+
+            // Handle console messages from WebView
+            if (event == 'console') {
+              final type = data['data']?['type'] ?? 'log';
+              final msg = data['data']?['message'] ?? '';
+              _debugLog('🌐 Console [$type]: $msg');
+
+              // Check if console message contains error information
+              if (msg.contains('error') ||
+                  msg.contains('Error') ||
+                  msg.contains('153') ||
+                  msg.contains('150')) {
+                _debugLog('⚠️ Potential error detected in console message');
+              }
+            }
+
+            // Handle YouTube player errors (like error 153)
+            if (event == 'onError') {
+              final errorCode = data['data']?['errorCode'] ?? 0;
+
+              _debugLog('🔴 ERROR DETECTED - Code: $errorCode');
+
+              _lastError = PlayerError(
+                code: errorCode,
+                message: 'YouTube player error: $errorCode',
+              );
+
+              // Set player as not ready when there's an error
+              _isReady = false;
+
+              _debugLog(
+                '🔴 Setting _isReady = false, calling notifyListeners()',
+              );
+
+              // CRITICAL: Call notifyListeners() FIRST to update UI immediately
+              notifyListeners();
+
+              // Call the error callback immediately
+              onError?.call(_lastError!);
+
+              _debugLog('🔴 Error callbacks executed, hiding WebView content');
+
+              // THEN hide the WebView content (non-blocking)
+              webViewController.loadHtmlString(
+                '<html><head><style>body{margin:0;padding:0;background:transparent;}</style></head><body></body></html>',
+              );
+
+              // Also run JavaScript to hide content
+              webViewController.runJavaScript('''
+                (function() {
+                  // Completely clear the page content
+                  document.documentElement.innerHTML = '';
+                  document.body.innerHTML = '';
+                  document.documentElement.style.cssText = 'display:none!important;opacity:0!important;';
+                  document.body.style.cssText = 'display:none!important;opacity:0!important;';
+                  
+                  // Inject blocking CSS
+                  const style = document.createElement('style');
+                  style.textContent = \`* { display: none !important; opacity: 0 !important; pointer-events: none !important; }\`;
+                  if (document.head) document.head.appendChild(style);
+                  
+                  // Block all interactions
+                  document.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    return false;
+                  }, true);
+                  
+                  document.addEventListener('touchstart', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    return false;
+                  }, true);
+                })();
+              ''');
+            }
+          } catch (e) {
+            _debugLog('Error processing JavaScript message: $e');
+          }
+        },
+      );
+
       // CRITICAL: Inject CSS immediately to hide YouTube button before page loads
       await webViewController.runJavaScript('''
         (function() {
           const style = document.createElement('style');
           style.id = 'teqani-instant-hide';
-          style.textContent = `
-            /* Hide YouTube button instantly before iframe loads */
+          style.textContent = \`
+            /* ULTRA AGGRESSIVE: Hide iframe and body by default to prevent any YouTube UI from showing */
+            body, html {
+              background: transparent !important;
+              overflow: hidden !important;
+            }
+            
+            iframe, 
+            .ytp-error,
+            .ytp-error *,
+            .ytp-error-content,
+            .ytp-error-content-wrap,
+            .ytp-error-content-wrap-subreason,
+            .ytp-error-content-wrap-reason,
             .ytp-youtube-button,
             .ytp-button[aria-label*='YouTube'],
             .ytp-chrome-top-buttons,
@@ -203,9 +337,11 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
               width: 0 !important;
               height: 0 !important;
               position: absolute !important;
-              left: -9999px !important;
+              left: -99999px !important;
+              top: -99999px !important;
+              z-index: -9999 !important;
             }
-          `;
+          \`;
           if (document.head) {
             document.head.appendChild(style);
           } else {
@@ -213,6 +349,110 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
               if (document.head) document.head.appendChild(style);
             });
           }
+        })();
+      ''');
+
+      // CRITICAL: Add early error monitoring to hide page IMMEDIATELY on any error
+      await webViewController.runJavaScript('''
+        (function() {
+          // ULTRA AGGRESSIVE: Hide EVERYTHING by default, only show if no error
+          const hideAllStyle = document.createElement('style');
+          hideAllStyle.id = 'teqani-hide-all-errors';
+          hideAllStyle.textContent = \`
+            /* Hide ALL error elements and iframe by default */
+            .ytp-error,
+            .ytp-error *,
+            .ytp-error-content,
+            .ytp-error-content-wrap,
+            .ytp-error-content-wrap-subreason,
+            .ytp-error-content-wrap-reason,
+            iframe[src*="youtube.com/embed"] {
+              display: none !important;
+              visibility: hidden !important;
+              opacity: 0 !important;
+              pointer-events: none !important;
+              width: 0 !important;
+              height: 0 !important;
+            }
+          \`;
+          document.head.appendChild(hideAllStyle);
+          
+          // Monitor for iframe messages that indicate errors
+          window.addEventListener('message', function(event) {
+            if (event.origin.indexOf('youtube.com') !== -1) {
+              try {
+                let data = event.data;
+                if (typeof data === 'string') {
+                  try {
+                    data = JSON.parse(data);
+                  } catch(e) {}
+                }
+                
+                // Check if this is an error event
+                if (data && (data.event === 'onError' || data.info === 150 || data.info === 153)) {
+                  // IMMEDIATELY hide everything
+                  document.documentElement.style.cssText = 'display:none!important;opacity:0!important;';
+                  document.body.style.cssText = 'display:none!important;opacity:0!important;';
+                  
+                  // Remove all content
+                  document.body.innerHTML = '';
+                  
+                  // Remove iframe
+                  const iframes = document.querySelectorAll('iframe');
+                  iframes.forEach(iframe => iframe.remove());
+                }
+              } catch(e) {}
+            }
+          }, true);
+          
+          // SUPER AGGRESSIVE: Set up a MutationObserver to instantly hide error elements
+          const errorObserver = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+              mutation.addedNodes.forEach((node) => {
+                if (node.nodeType === 1) {
+                  // If it's an iframe or error element, hide it instantly
+                  if (node.tagName === 'IFRAME' || 
+                      (node.classList && (
+                        node.classList.contains('ytp-error') ||
+                        node.classList.contains('ytp-error-content') ||
+                        node.classList.contains('ytp-error-content-wrap')
+                      ))) {
+                    // Hide entire page
+                    document.documentElement.style.cssText = 'display:none!important;opacity:0!important;';
+                    document.body.style.cssText = 'display:none!important;opacity:0!important;';
+                    node.remove();
+                  }
+                  
+                  // Check children
+                  if (node.querySelectorAll) {
+                    const errorElements = node.querySelectorAll('.ytp-error, .ytp-error-content, .ytp-error-content-wrap, iframe[src*="youtube"]');
+                    if (errorElements.length > 0) {
+                      document.documentElement.style.cssText = 'display:none!important;opacity:0!important;';
+                      document.body.style.cssText = 'display:none!important;opacity:0!important;';
+                      errorElements.forEach(el => el.remove());
+                    }
+                  }
+                }
+              });
+            });
+          });
+          
+          errorObserver.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class', 'style']
+          });
+          
+          // Also monitor for any iframe loads and check if they show errors
+          setInterval(() => {
+            const errorElements = document.querySelectorAll('.ytp-error, .ytp-error-content, .ytp-error-content-wrap');
+            if (errorElements.length > 0) {
+              document.documentElement.style.cssText = 'display:none!important;opacity:0!important;';
+              document.body.style.cssText = 'display:none!important;opacity:0!important;';
+              document.body.innerHTML = '';
+            }
+          }, 10); // Check every 10ms
         })();
       ''');
 
@@ -330,6 +570,47 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
         NavigationDelegate(
           onPageStarted: (String url) {
             _debugLog('Page started loading: $url');
+
+            // CRITICAL: Set up console message capture to see ALL errors
+            webViewController.runJavaScript('''
+              (function() {
+                // Capture all console messages
+                const originalLog = console.log;
+                const originalError = console.error;
+                const originalWarn = console.warn;
+                
+                console.log = function(...args) {
+                  originalLog.apply(console, args);
+                  try {
+                    window.flutter_inappwebview.callHandler('TeqaniYTPlayer', JSON.stringify({
+                      event: 'console',
+                      data: { type: 'log', message: args.join(' ') }
+                    }));
+                  } catch(e) {}
+                };
+                
+                console.error = function(...args) {
+                  originalError.apply(console, args);
+                  try {
+                    window.flutter_inappwebview.callHandler('TeqaniYTPlayer', JSON.stringify({
+                      event: 'console',
+                      data: { type: 'error', message: args.join(' ') }
+                    }));
+                  } catch(e) {}
+                };
+                
+                console.warn = function(...args) {
+                  originalWarn.apply(console, args);
+                  try {
+                    window.flutter_inappwebview.callHandler('TeqaniYTPlayer', JSON.stringify({
+                      event: 'console',
+                      data: { type: 'warn', message: args.join(' ') }
+                    }));
+                  } catch(e) {}
+                };
+              })();
+            ''');
+
             // CRITICAL: Inject CSS hiding IMMEDIATELY when page starts loading
             webViewController.runJavaScript('''
               (function() {
@@ -374,12 +655,49 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
           onWebResourceError: (WebResourceError error) {
             _debugLog('Web resource error: ${error.description}');
 
-            // Check for network error
-            if (error.errorCode == -2) {
+            // Check for network error or any error
+            if (error.errorCode == -2 || error.errorCode != 0) {
               _lastError = PlayerError(
                 code: error.errorCode,
-                message: 'Network error: ${error.description}',
+                message: 'Error: ${error.description}',
               );
+
+              // Set player as not ready when there's an error
+              _isReady = false;
+
+              // AGGRESSIVE: Completely hide the WebView content on error
+              webViewController.runJavaScript('''
+                (function() {
+                  // Hide everything
+                  const style = document.createElement('style');
+                  style.textContent = `
+                    body, html, *, iframe, video,
+                    .ytp-error,
+                    .ytp-error-content,
+                    .ytp-error-content-wrap,
+                    .ytp-youtube-button,
+                    .ytp-button[aria-label*='YouTube'],
+                    .ytp-watermark {
+                      display: none !important;
+                      visibility: hidden !important;
+                      opacity: 0 !important;
+                      pointer-events: none !important;
+                    }
+                  `;
+                  document.head.appendChild(style);
+                  
+                  // Remove all elements
+                  document.body.innerHTML = '';
+                  document.body.style.cssText = 'display:none!important;opacity:0!important;';
+                  
+                  // Block all interactions
+                  document.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return false;
+                  }, true);
+                })();
+              ''');
 
               // Call the error callback directly
               onError?.call(_lastError!);
@@ -390,11 +708,182 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
         ),
       );
 
-      // Load the video URL directly (HTML wrapper causes error 15)
+      // Load the video with HTML wrapper to control error display
       final videoUrl = _buildYoutubeEmbedUrl();
       _debugLog('Loading video URL: $videoUrl');
 
-      await webViewController.loadRequest(Uri.parse(videoUrl));
+      // Use HTML wrapper with aggressive error hiding
+      final htmlContent = '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+          <style>
+            * {
+              margin: 0;
+              padding: 0;
+              box-sizing: border-box;
+            }
+            body, html {
+              width: 100%;
+              height: 100%;
+              overflow: hidden;
+              background: black;
+            }
+            /* CRITICAL: Hide iframe by default until we confirm no error */
+            iframe {
+              width: 100%;
+              height: 100%;
+              border: none;
+              opacity: 0 !important;
+              visibility: hidden !important;
+              transition: opacity 0.1s ease;
+            }
+            /* Show iframe only when confirmed ready */
+            iframe.ready {
+              opacity: 1 !important;
+              visibility: visible !important;
+            }
+            /* Hide ALL YouTube error elements */
+            .ytp-error,
+            .ytp-error *,
+            .ytp-error-content,
+            .ytp-error-content-wrap,
+            .ytp-error-content-wrap-subreason,
+            .ytp-error-content-wrap-reason {
+              display: none !important;
+              visibility: hidden !important;
+              opacity: 0 !important;
+              pointer-events: none !important;
+              position: absolute !important;
+              left: -99999px !important;
+              top: -99999px !important;
+            }
+            /* Error message styling */
+            #error-message {
+              display: none;
+              position: absolute;
+              top: 50%;
+              left: 50%;
+              transform: translate(-50%, -50%);
+              color: white;
+              font-size: 18px;
+              font-weight: bold;
+              text-align: center;
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            }
+            #error-message.show {
+              display: block;
+            }
+          </style>
+        </head>
+        <body>
+          <div id="error-message">Try later</div>
+          <iframe 
+            id="youtube-player"
+            src="$videoUrl" 
+            frameborder="0" 
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+            allowfullscreen>
+          </iframe>
+          <script>
+            let errorDetected = false;
+            let readyDetected = false;
+            
+            // Function to show error message
+            function showError() {
+              errorDetected = true;
+              const iframe = document.getElementById('youtube-player');
+              if (iframe) {
+                iframe.style.opacity = '0';
+                iframe.style.visibility = 'hidden';
+                iframe.style.display = 'none';
+              }
+              
+              const errorMsg = document.getElementById('error-message');
+              if (errorMsg) {
+                errorMsg.classList.add('show');
+                errorMsg.style.display = 'block';
+              }
+              
+              document.body.style.background = 'black';
+              console.log('Error message shown');
+            }
+            
+            // Timeout: If not ready after 1.5 seconds, show error
+            setTimeout(function() {
+              if (!readyDetected && !errorDetected) {
+                console.log('Timeout: Video not ready after 1.5 seconds, showing error message');
+                showError();
+              }
+            }, 1500);
+            
+            // Monitor for errors and notify Flutter immediately
+            window.addEventListener('message', function(event) {
+              if (!event.origin || event.origin.indexOf('youtube.com') === -1) return;
+              
+              try {
+                let data = event.data;
+                if (typeof data === 'string') {
+                  try { data = JSON.parse(data); } catch(e) { return; }
+                }
+                
+                // Check for ready state (video starting to play)
+                if (data && data.event === 'onReady' && !errorDetected) {
+                  readyDetected = true;
+                  // Video is ready, show iframe
+                  const iframe = document.getElementById('youtube-player');
+                  if (iframe) {
+                    iframe.classList.add('ready');
+                  }
+                  console.log('Video ready');
+                }
+                
+                // If error detected, show error message
+                if (data && (data.event === 'onError' || [2, 5, 100, 101, 150, 153].includes(data.info))) {
+                  console.log('Error detected:', data.info || data.data);
+                  showError();
+                  
+                  // Forward error to Flutter
+                  if (window.flutter_inappwebview) {
+                    window.flutter_inappwebview.callHandler('TeqaniYTPlayer', JSON.stringify({
+                      event: 'onError',
+                      data: { errorCode: data.info || data.data }
+                    }));
+                  }
+                }
+              } catch(e) {
+                console.error('Error processing message:', e);
+              }
+            }, true);
+            
+            // MutationObserver to catch error elements
+            const observer = new MutationObserver(function(mutations) {
+              const errorElements = document.querySelectorAll('.ytp-error, .ytp-error-content, .ytp-error-content-wrap');
+              if (errorElements.length > 0) {
+                errorElements.forEach(el => {
+                  el.style.display = 'none';
+                  el.style.opacity = '0';
+                  el.remove();
+                });
+                const iframe = document.getElementById('youtube-player');
+                if (iframe) {
+                  iframe.style.display = 'none';
+                }
+              }
+            });
+            
+            observer.observe(document.documentElement, {
+              childList: true,
+              subtree: true,
+              attributes: true
+            });
+          </script>
+        </body>
+        </html>
+      ''';
+
+      await webViewController.loadHtmlString(htmlContent);
 
       // Check if fullscreen is allowed
       final allowFullscreen = initialConfig.allowFullscreen;
