@@ -374,12 +374,36 @@ class TeqaniYoutubePlayerController extends ChangeNotifier {
           onWebResourceError: (WebResourceError error) {
             _debugLog('Web resource error: ${error.description}');
 
-            // Check for network error
-            if (error.errorCode == -2) {
+            // Check for network error or any error
+            if (error.errorCode == -2 || error.errorCode != 0) {
               _lastError = PlayerError(
                 code: error.errorCode,
-                message: 'Network error: ${error.description}',
+                message: 'Error: ${error.description}',
               );
+
+              // Set player as not ready when there's an error
+              _isReady = false;
+
+              // Hide YouTube button on error
+              webViewController.runJavaScript('''
+                (function() {
+                  const style = document.createElement('style');
+                  style.textContent = `
+                    .ytp-youtube-button,
+                    .ytp-button[aria-label*='YouTube'],
+                    .ytp-chrome-top-buttons,
+                    a.ytp-youtube-button,
+                    .ytp-watermark,
+                    * {
+                      display: none !important;
+                      visibility: hidden !important;
+                      opacity: 0 !important;
+                      pointer-events: none !important;
+                    }
+                  `;
+                  document.head.appendChild(style);
+                })();
+              ''');
 
               // Call the error callback directly
               onError?.call(_lastError!);

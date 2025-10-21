@@ -489,98 +489,108 @@ class _TeqaniYoutubePlayerState extends State<TeqaniYoutubePlayer>
     final settingsConfig =
         widget.settingsButtonConfig ?? const SettingsButtonConfig();
 
-    return AspectRatio(
-      aspectRatio:
-          _isLandscape
-              ? mediaQuery.size.width / mediaQuery.size.height
-              : widget.aspectRatio,
-      child: ColoredBox(
-        color: widget.backgroundColor,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // Player surface with interaction detector
-            GestureDetector(
-              onTap: () {
-                // Only allow interaction if player is ready
-                if (!widget.controller.isReady) {
-                  return;
-                }
+    return widget.controller.playerState == PlayerState.playing
+        ? SizedBox(
+          width: double.infinity,
+          height: 200,
+          child: Text("error player"),
+        )
+        : AspectRatio(
+          aspectRatio:
+              _isLandscape
+                  ? mediaQuery.size.width / mediaQuery.size.height
+                  : widget.aspectRatio,
+          child: ColoredBox(
+            color: widget.backgroundColor,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // Player surface with interaction detector
+                GestureDetector(
+                  onTap: () {
+                    // Only allow interaction if player is ready
+                    if (!widget.controller.isReady) {
+                      return;
+                    }
 
-                // Show YouTube controls
-                widget.controller.webViewController.runJavaScript('''
+                    // Show YouTube controls
+                    widget.controller.webViewController.runJavaScript('''
                   document.querySelector('video')?.click();
                 ''');
 
-                // Trigger an immediate visibility check after tap
-                Future.delayed(const Duration(milliseconds: 100), () {
-                  _checkYouTubeControlsVisibility();
-                });
-              },
-              child: _buildPlayerSurface(),
+                    // Trigger an immediate visibility check after tap
+                    Future.delayed(const Duration(milliseconds: 100), () {
+                      _checkYouTubeControlsVisibility();
+                    });
+                  },
+                  child: _buildPlayerSurface(),
+                ),
+
+                // Interaction blocker overlay until player is ready OR if there's an error
+                if (!widget.controller.isReady ||
+                    widget.controller.lastError != null)
+                  Positioned.fill(
+                    child: AbsorbPointer(
+                      absorbing: true,
+                      child: Container(color: Colors.transparent),
+                    ),
+                  ),
+
+                // Ad Overlay
+                _buildAdOverlay(),
+
+                // Loading indicator
+                if (!widget.controller.isReady &&
+                    widget.controller.lastError == null)
+                  RepaintBoundary(
+                    child: Center(
+                      child: CircularProgressIndicator(
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          widget.loadingIndicatorColor,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Error overlay - Show for any error (network or YouTube error)
+                if (widget.controller.lastError != null)
+                  RepaintBoundary(child: _buildErrorOverlay()),
+
+                // Watermark overlay
+                if (_showWatermark && widget.controller.isReady)
+                  RepaintBoundary(
+                    child: WatermarkOverlay(
+                      textWatermark:
+                          widget.controller.initialConfig.textWatermark,
+                      imageWatermark:
+                          widget.controller.initialConfig.imageWatermark,
+                    ),
+                  ),
+
+                // Settings button that syncs with YouTube controls visibility
+                if (settingsConfig.visible &&
+                    _isInitialized &&
+                    (widget.showQualitySettings || widget.showFilterSettings) &&
+                    _activeAd ==
+                        null) // Hide settings button when an ad is active
+                  Align(
+                    alignment: settingsConfig.alignment,
+                    child: Padding(
+                      padding: settingsConfig.padding,
+                      child: AnimatedOpacity(
+                        opacity: _controlsVisible ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 300),
+                        child: IgnorePointer(
+                          ignoring: !_controlsVisible,
+                          child: _buildSettingsButton(),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
-
-            // Interaction blocker overlay until player is ready
-            if (!widget.controller.isReady)
-              Positioned.fill(
-                child: AbsorbPointer(
-                  absorbing: true,
-                  child: Container(color: Colors.transparent),
-                ),
-              ),
-
-            // Ad Overlay
-            _buildAdOverlay(),
-
-            // Loading indicator
-            if (!widget.controller.isReady)
-              RepaintBoundary(
-                child: Center(
-                  child: CircularProgressIndicator(
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      widget.loadingIndicatorColor,
-                    ),
-                  ),
-                ),
-              ),
-
-            // Network error overlay
-            if (widget.controller.lastError?.code == -2)
-              RepaintBoundary(child: _buildNetworkErrorOverlay()),
-
-            // Watermark overlay
-            if (_showWatermark && widget.controller.isReady)
-              RepaintBoundary(
-                child: WatermarkOverlay(
-                  textWatermark: widget.controller.initialConfig.textWatermark,
-                  imageWatermark:
-                      widget.controller.initialConfig.imageWatermark,
-                ),
-              ),
-
-            // Settings button that syncs with YouTube controls visibility
-            if (settingsConfig.visible &&
-                _isInitialized &&
-                (widget.showQualitySettings || widget.showFilterSettings) &&
-                _activeAd == null) // Hide settings button when an ad is active
-              Align(
-                alignment: settingsConfig.alignment,
-                child: Padding(
-                  padding: settingsConfig.padding,
-                  child: AnimatedOpacity(
-                    opacity: _controlsVisible ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 300),
-                    child: IgnorePointer(
-                      ignoring: !_controlsVisible,
-                      child: _buildSettingsButton(),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
+          ),
+        );
   }
 
   /// Build a reliable settings button that uses the provided config
@@ -627,58 +637,28 @@ class _TeqaniYoutubePlayerState extends State<TeqaniYoutubePlayer>
     );
   }
 
-  /// Builds the network error overlay with retry button
-  Widget _buildNetworkErrorOverlay() {
+  /// Builds the error overlay with simple message
+  Widget _buildErrorOverlay() {
     return Container(
       color: Colors.black87,
-      child: Center(
+      child: const Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.signal_wifi_off, color: Colors.white, size: 48),
-            const SizedBox(height: 16),
-            const Text(
-              'No Internet Connection',
+            Icon(Icons.error_outline, color: Colors.white, size: 48),
+            SizedBox(height: 16),
+            Text(
+              'Try later',
               style: TextStyle(
                 color: Colors.white,
-                fontSize: 16,
+                fontSize: 18,
                 fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Please check your connection and try again',
-              style: TextStyle(color: Colors.white70, fontSize: 14),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: _reloadPlayer,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 12,
-                ),
               ),
             ),
           ],
         ),
       ),
     );
-  }
-
-  /// Reload the player to retry connection
-  void _reloadPlayer() {
-    widget.controller.clearError();
-    setState(() {
-      _isInitialized = false;
-    });
-    widget.controller.webViewController.reload();
-    _initializePlayer();
   }
 
   /// Build the WebView player surface with performance optimizations
